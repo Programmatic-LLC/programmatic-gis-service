@@ -1,0 +1,39 @@
+{
+	"name": "programmatic-gis-service",
+	"version": "1.0.0",
+	"description": "Spatial processing library: geocoding, routing, IP geolocation, spatial file parsing (GeoJSON/GPX/KML/KMZ/shapefile), and Esri REST feature service ingestion with normalized GeoJSON types",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"files": [
+		"dist"
+	],
+	"engines": {
+		"node": ">=18"
+	},
+	"scripts": {
+		"build": "tsc",
+		"prepare": "npm run build",
+		"test": "jest",
+		"typecheck": "tsc --noEmit"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+ssh://git@github.com/Programmatic-LLC/programmatic-gis-service.git"
+	},
+	"license": "UNLICENSED",
+	"dependencies": {
+		"@tmcw/togeojson": "^5.8.1",
+		"@xmldom/xmldom": "^0.9.8",
+		"jszip": "^3.10.1",
+		"proj4": "^2.19.10",
+		"shapefile": "^0.6.6"
+	},
+	"devDependencies": {
+		"@types/jest": "^30.0.0",
+		"@types/node": "^22.19.11",
+		"@types/proj4": "^2.5.6",
+		"jest": "^30.2.0",
+		"ts-jest": "^29.4.6",
+		"typescript": "^5.9.3"
+	}
+}
