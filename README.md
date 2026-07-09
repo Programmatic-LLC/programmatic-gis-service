@@ -7,7 +7,7 @@ No hosted service required: install it straight from GitHub as an npm dependency
 ## Install
 
 ```bash
-npm install git+ssh://git@github.com/Programmatic-LLC/programmatic-gis-service.git#v1.0.0
+npm install git+https://github.com/Programmatic-LLC/programmatic-gis-service.git#v1.0.0
 ```
 
 Pin to a tag for reproducible builds. Installing from git runs the `prepare` script, which compiles `dist/` automatically.
@@ -17,7 +17,7 @@ In `package.json`:
 ```json
 {
   "dependencies": {
-    "programmatic-gis-service": "git+ssh://git@github.com/Programmatic-LLC/programmatic-gis-service.git#v1.0.0"
+    "programmatic-gis-service": "git+https://github.com/Programmatic-LLC/programmatic-gis-service.git#v1.0.0"
   }
 }
 ```
