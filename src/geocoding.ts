@@ -10,7 +10,6 @@ import { noopLogger } from './logger';
 
 const GEOAPIFY_AUTOCOMPLETE_ENDPOINT = 'https://api.geoapify.com/v1/geocode/autocomplete';
 const MAPBOX_FORWARD_ENDPOINT = 'https://api.mapbox.com/search/geocode/v6/forward';
-const AUTOCOMPLETE_TYPES = ['street'];
 
 interface MapboxRoutablePoint {
 	name: string;
@@ -63,7 +62,6 @@ export class GeocodingModule {
 
 		const params = new URLSearchParams({
 			text,
-			type: AUTOCOMPLETE_TYPES.join(','),
 			limit: String(this.limit),
 			apiKey: this.geoapifyApiKey,
 			format: 'json'
@@ -104,15 +102,26 @@ export class GeocodingModule {
 
 		const params = new URLSearchParams({
 			country: String(country_code || 'us'),
-			address_number: String(housenumber),
-			street: String(street),
-			postcode: String(postcode),
-			place: String(city),
-			region: String(state),
 			access_token: this.mapboxApiKey,
 			entrances: 'true',
 			limit: '1',
 			permanent: 'true'
+		});
+
+		const optionalParams: Record<string, unknown> = {
+			address_number: housenumber,
+			street,
+			postcode,
+			place: city,
+			region: state
+		};
+
+		Object.entries(optionalParams).forEach(([key, value]) => {
+			if (value === undefined || value === null || String(value).trim() === '') {
+				return;
+			}
+
+			params.set(key, String(value));
 		});
 
 		const url = `${MAPBOX_FORWARD_ENDPOINT}?${params.toString()}`;
