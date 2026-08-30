@@ -35,9 +35,19 @@ describe('autocomplete', () => {
 		expect(result).toEqual(body);
 		const requestedUrl = fetchMock.mock.calls[0][0] as string;
 		expect(requestedUrl).toContain('https://api.geoapify.com/v1/geocode/autocomplete');
-		expect(requestedUrl).toContain('type=street');
 		expect(requestedUrl).toContain('limit=5');
 		expect(requestedUrl).toContain('format=json');
+	});
+
+	it('does not restrict results to street level, so house numbers can rank first', async () => {
+		const fetchMock = installFetchMock();
+		fetchMock.mockResolvedValueOnce(jsonResponse({ results: [] }));
+
+		const geocoding = new GeocodingModule({ geoapifyApiKey: 'geo-key' });
+		await geocoding.autocomplete('123 Main');
+
+		const requestedUrl = fetchMock.mock.calls[0][0] as string;
+		expect(requestedUrl).not.toContain('type=');
 	});
 
 	it('throws PROVIDER_ERROR with the provider message on failure', async () => {
@@ -91,6 +101,36 @@ describe('geocodePermanent', () => {
 		expect(requestedUrl).toContain('entrances=true');
 		expect(requestedUrl).toContain('limit=1');
 		expect(requestedUrl).toContain('address_number=123');
+		expect(requestedUrl).toContain('postcode=19107');
+		expect(requestedUrl).toContain('region=Pennsylvania');
+	});
+
+	it('omits address fields the suggestion does not carry instead of sending "undefined"', async () => {
+		const fetchMock = installFetchMock();
+		fetchMock.mockResolvedValueOnce(jsonResponse({ features: [mapboxFeature()], attribution: 'Mapbox' }));
+
+		const geocoding = new GeocodingModule({ mapboxApiKey: 'mb-key' });
+		await geocoding.geocodePermanent({ street: 'Main St', city: 'Philadelphia', country_code: 'us' });
+
+		const requestedUrl = fetchMock.mock.calls[0][0] as string;
+		expect(requestedUrl).not.toContain('undefined');
+		expect(requestedUrl).not.toContain('address_number=');
+		expect(requestedUrl).not.toContain('postcode=');
+		expect(requestedUrl).toContain('street=Main+St');
+		expect(requestedUrl).toContain('place=Philadelphia');
+	});
+
+	it('omits address fields that are present but empty', async () => {
+		const fetchMock = installFetchMock();
+		fetchMock.mockResolvedValueOnce(jsonResponse({ features: [mapboxFeature()], attribution: 'Mapbox' }));
+
+		const geocoding = new GeocodingModule({ mapboxApiKey: 'mb-key' });
+		await geocoding.geocodePermanent({ ...suggestion, housenumber: '   ', postcode: '' });
+
+		const requestedUrl = fetchMock.mock.calls[0][0] as string;
+		expect(requestedUrl).not.toContain('address_number=');
+		expect(requestedUrl).not.toContain('postcode=');
+		expect(requestedUrl).toContain('street=Main+St');
 	});
 
 	it('normalizes the Mapbox feature into a GeocodedAddress', async () => {
@@ -164,7 +204,7 @@ describe('geocodePermanent', () => {
 		expect(error.message).toBe('No Mapbox results found');
 	});
 
-	it('coerces missing address parts the same way as URLSearchParams', async () => {
+	it('defaults the country and drops missing address parts', async () => {
 		const fetchMock = installFetchMock();
 		fetchMock.mockResolvedValueOnce(jsonResponse({ features: [mapboxFeature()], attribution: 'Mapbox' }));
 
@@ -172,7 +212,8 @@ describe('geocodePermanent', () => {
 		await geocoding.geocodePermanent({ street: 'Main St' });
 
 		const requestedUrl = fetchMock.mock.calls[0][0] as string;
-		expect(requestedUrl).toContain('address_number=undefined');
 		expect(requestedUrl).toContain('country=us');
+		expect(requestedUrl).toContain('street=Main+St');
+		expect(requestedUrl).not.toContain('undefined');
 	});
 });

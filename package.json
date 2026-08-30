@@ -1,6 +1,6 @@
 {
 	"name": "programmatic-gis-service",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Spatial processing library: geocoding, routing, IP geolocation, spatial file parsing (GeoJSON/GPX/KML/KMZ/shapefile), and Esri REST feature service ingestion with normalized GeoJSON types",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
