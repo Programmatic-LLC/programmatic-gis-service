@@ -5,6 +5,7 @@ import { installFetchMock, jsonResponse } from './helpers';
 const mapboxFeature = (routablePoints?: { name: string; latitude: number; longitude: number }[]) => ({
 	properties: {
 		mapbox_id: 'mb-123',
+		feature_type: 'address',
 		name: '123 Main St',
 		name_preferred: '123 Main Street',
 		place_formatted: 'Philadelphia, Pennsylvania 19107, United States',
@@ -151,7 +152,8 @@ describe('geocodePermanent', () => {
 			postalCode: '19107',
 			country: 'US',
 			latitude: 39.95,
-			longitude: -75.16
+			longitude: -75.16,
+			matchType: 'address'
 		});
 	});
 
@@ -215,5 +217,120 @@ describe('geocodePermanent', () => {
 		expect(requestedUrl).toContain('country=us');
 		expect(requestedUrl).toContain('street=Main+St');
 		expect(requestedUrl).not.toContain('undefined');
+	});
+
+	it('searches free text when the address has no separate street', async () => {
+		const fetchMock = installFetchMock();
+		fetchMock.mockResolvedValueOnce(jsonResponse({ features: [mapboxFeature()], attribution: 'Mapbox' }));
+
+		const geocoding = new GeocodingModule({ mapboxApiKey: 'mb-key' });
+		await geocoding.geocodePermanent({ formatted: ' 123 Main St, Philadelphia, PA 19107 ', city: 'Philadelphia' });
+
+		const requestedUrl = new URL(fetchMock.mock.calls[0][0] as string);
+		expect(requestedUrl.searchParams.get('q')).toBe('123 Main St, Philadelphia, PA 19107');
+		expect(requestedUrl.searchParams.get('permanent')).toBe('true');
+		expect(requestedUrl.searchParams.has('place')).toBe(false);
+	});
+
+	it('keeps the structured search when a street is given alongside formatted text', async () => {
+		const fetchMock = installFetchMock();
+		fetchMock.mockResolvedValueOnce(jsonResponse({ features: [mapboxFeature()], attribution: 'Mapbox' }));
+
+		const geocoding = new GeocodingModule({ mapboxApiKey: 'mb-key' });
+		await geocoding.geocodePermanent({ ...suggestion, formatted: '123 Main St, Philadelphia' });
+
+		const requestedUrl = new URL(fetchMock.mock.calls[0][0] as string);
+		expect(requestedUrl.searchParams.has('q')).toBe(false);
+		expect(requestedUrl.searchParams.get('street')).toBe('Main St');
+	});
+});
+
+describe('geocodeSearch', () => {
+	const geoapifyResult = {
+		lat: 41.36,
+		lon: -82.1,
+		name: 'Old Mill',
+		address_line1: '12 Mill St',
+		address_line2: 'Elyria, OH 44035, United States of America',
+		city: 'Elyria',
+		state_code: 'OH',
+		postcode: '44035',
+		country_code: 'us',
+		result_type: 'building',
+		datasource: { sourcename: 'openstreetmap', attribution: '© OpenStreetMap contributors', license: 'Open Database License' }
+	};
+
+	it('geocodes free text through the Geoapify search endpoint', async () => {
+		const fetchMock = installFetchMock();
+		fetchMock.mockResolvedValueOnce(jsonResponse({ results: [geoapifyResult] }));
+
+		const geocoding = new GeocodingModule({ geoapifyApiKey: 'ga-key' });
+		const result = await geocoding.geocodeSearch({ formatted: '12 Mill St, Elyria, OH' });
+
+		const requestedUrl = new URL(fetchMock.mock.calls[0][0] as string);
+		expect(requestedUrl.origin + requestedUrl.pathname).toBe('https://api.geoapify.com/v1/geocode/search');
+		expect(requestedUrl.searchParams.get('text')).toBe('12 Mill St, Elyria, OH');
+		expect(requestedUrl.searchParams.get('filter')).toBe('countrycode:us');
+		expect(result).toEqual({
+			attribution: {
+				provider: 'geoapify',
+				sourcename: 'openstreetmap',
+				attribution: '© OpenStreetMap contributors',
+				license: 'Open Database License'
+			},
+			mapboxId: undefined,
+			name: 'Old Mill',
+			addressLine1: '12 Mill St',
+			addressLine2: 'Elyria, OH 44035, United States of America',
+			city: 'Elyria',
+			state: 'OH',
+			postalCode: '44035',
+			country: 'US',
+			latitude: 41.36,
+			longitude: -82.1,
+			matchType: 'building'
+		});
+	});
+
+	it('sends structured parts when a street is given', async () => {
+		const fetchMock = installFetchMock();
+		fetchMock.mockResolvedValueOnce(jsonResponse({ results: [geoapifyResult] }));
+
+		const geocoding = new GeocodingModule({ geoapifyApiKey: 'ga-key' });
+		await geocoding.geocodeSearch({ housenumber: '12', street: 'Mill St', city: 'Elyria', postcode: '' });
+
+		const requestedUrl = new URL(fetchMock.mock.calls[0][0] as string);
+		expect(requestedUrl.searchParams.get('housenumber')).toBe('12');
+		expect(requestedUrl.searchParams.get('street')).toBe('Mill St');
+		expect(requestedUrl.searchParams.has('postcode')).toBe(false);
+		expect(requestedUrl.searchParams.has('text')).toBe(false);
+	});
+
+	it('throws NO_RESULTS when nothing matches', async () => {
+		const fetchMock = installFetchMock();
+		fetchMock.mockResolvedValueOnce(jsonResponse({ results: [] }));
+
+		const geocoding = new GeocodingModule({ geoapifyApiKey: 'ga-key' });
+		const error = await geocoding.geocodeSearch({ formatted: 'nowhere' }).catch((e) => e);
+
+		expect(error).toBeInstanceOf(GisError);
+		expect(error.code).toBe('NO_RESULTS');
+	});
+
+	it('throws PROVIDER_ERROR when Geoapify fails', async () => {
+		const fetchMock = installFetchMock();
+		fetchMock.mockResolvedValueOnce(jsonResponse({ message: 'bad key' }, false, 401));
+
+		const geocoding = new GeocodingModule({ geoapifyApiKey: 'ga-key' });
+		const error = await geocoding.geocodeSearch({ formatted: '12 Mill St' }).catch((e) => e);
+
+		expect(error.code).toBe('PROVIDER_ERROR');
+	});
+
+	it('throws MISSING_API_KEY when no Geoapify key is configured', async () => {
+		const geocoding = new GeocodingModule({});
+		const error = await geocoding.geocodeSearch({ formatted: '12 Mill St' }).catch((e) => e);
+
+		expect(error.code).toBe('MISSING_API_KEY');
 	});
 });

@@ -7,7 +7,7 @@ No hosted service required: install it straight from GitHub as an npm dependency
 ## Install
 
 ```bash
-npm install git+https://github.com/Programmatic-LLC/programmatic-gis-service.git#v1.0.0
+npm install git+https://github.com/Programmatic-LLC/programmatic-gis-service.git#v1.1.0
 ```
 
 Pin to a tag for reproducible builds. Installing from git runs the `prepare` script, which compiles `dist/` automatically.
@@ -17,7 +17,7 @@ In `package.json`:
 ```json
 {
   "dependencies": {
-    "programmatic-gis-service": "git+https://github.com/Programmatic-LLC/programmatic-gis-service.git#v1.0.0"
+    "programmatic-gis-service": "git+https://github.com/Programmatic-LLC/programmatic-gis-service.git#v1.1.0"
   }
 }
 ```
@@ -45,7 +45,7 @@ const gis = new GisService({
 
 | Option | Default | Used by |
 | --- | --- | --- |
-| `geoapifyApiKey` | — | `geocoding.autocomplete`, `routing`, `geolocation` |
+| `geoapifyApiKey` | — | `geocoding.autocomplete`, `geocoding.geocodeSearch`, `routing`, `geolocation` |
 | `mapboxApiKey` | — | `geocoding.geocodePermanent` |
 | `logger` | no-op | all modules; any object with `info(obj)` / `warn(obj)` (pino-compatible) |
 | `autocompleteLimit` | `5` | `geocoding.autocomplete` |
@@ -92,9 +92,15 @@ const address = await gis.geocoding.geocodePermanent(suggestions.results[0]);
 //   attribution, mapboxId, name,
 //   addressLine1, addressLine2,
 //   city, state, postalCode, country,
-//   latitude, longitude
+//   latitude, longitude, matchType
 // }
 ```
+
+`matchType` is how precise the match is, from the provider (Mapbox `feature_type`, Geoapify `result_type`): `address` or `building` is a street address, `street`, `postcode` or `place` means only part of the address matched.
+
+When the suggestion has no `street` but has `formatted` text, `geocodePermanent` searches that text (Mapbox `q`) instead of the structured fields. This is the path for addresses that arrive as one line, such as a spreadsheet column.
+
+`geocodeSearch(suggestion)` is the storage-safe fallback for callers with no Mapbox key. It uses the Geoapify search endpoint (not autocomplete), takes the same suggestion shape (`formatted` text, or structured `housenumber`, `street`, `city`, `state`, `postcode`, `country_code`), and returns a `GeocodedAddress` whose `attribution` is `{ provider: 'geoapify', ...datasource }`.
 
 `geocodePermanent` requests entrance points (`entrances=true`) and prefers the `entrance` routable point, then `default`, over the raw rooftop coordinate — the returned lat/lon is the best routable location.
 
@@ -158,9 +164,24 @@ const points = gis.files.countPoints(geom);
 | `parseKmz(input)` | Buffer | unzips, prefers `doc.kml`, falls back to any `.kml` entry |
 | `parseShapefile(input)` | Buffer (zip) | see below |
 | `detectAndParse(fileName, input)` | name + Buffer | dispatches on extension: `.geojson` `.json` `.gpx` `.kml` `.kmz` `.zip` |
+| `parsePlacemarks(fileName, input, options?)` | name + Buffer | `.kml` or `.kmz` only; see below |
 | `extractLineGeometry(fc)` | FeatureCollection | merges all `LineString`/`MultiLineString` features (including inside GeometryCollections) into one 2D `MultiLineString`; strips elevation |
 
 Shapefile expectations: a `.zip` containing `.shp` (+ optional `.dbf`, `.prj`). When the `.prj` declares a projected CRS, coordinates are reprojected to WGS84 via proj4; a missing or unparseable `.prj` assumes WGS84 and adds a warning. Archives with multiple `.shp` layers use the first line-bearing layer and add a warning.
+
+`parsePlacemarks` reads a Google Earth or My Maps export into places, keeping what `detectAndParse` drops:
+
+```js
+const { format, placemarks, images, skipped, warnings } = await gis.files.parsePlacemarks('map.kmz', buffer);
+// placemarks[]: { id, name, description, folder, geometryType, position, lines, imageRefs, properties }
+// images[]: { path, contentType, data }   (KMZ only)
+```
+
+- `folder` is the folder path, outermost first, for example `['Public Art', 'Murals']`.
+- `geometryType` is `point`, `line` or `polygon`. Points and polygons have `position` (`[lon, lat]`, a polygon's is the center of its outer ring). Lines have `lines`, a 2D `MultiLineString`.
+- `description` is the raw text, which is often HTML. Callers that store it should convert it to plain text.
+- `imageRefs` holds `http(s)` image URLs from the description's `<img>` tags and My Maps `gx_media_links`, plus the archive path of each image a KMZ embeds. Each archive path has a matching entry in `images`. Images over `options.maxImageBytes` (default 10 MB) are left out with a warning.
+- Placemarks with no usable coordinates count in `skipped`. Ground overlays are ignored.
 
 ### `gis.esri`
 
@@ -180,7 +201,7 @@ const { featureCollection, warnings } = await gis.esri.fetchFeatures(
 
 ## Types
 
-All exported from the package root: `GisServiceConfig`, `GisLogger`, `Waypoint`, `RouteMode`, `Route`, `TourRouteResult`, `TourRouteLeg`, `AddressSuggestion`, `AutocompleteResponse`, `GeocodedAddress`, `IpLocation`, `ParsedSpatialFile`, `SpatialFileFormat`, `EsriFetchOptions`, `EsriFetchResult`, `FeatureCollection`, `GeoJsonFeature`, `GeoJsonGeometry`, `MultiLineStringGeometry`, `PointGeometry`, `Position`, `GisError`, `GisErrorCode`.
+All exported from the package root: `GisServiceConfig`, `GisLogger`, `Waypoint`, `RouteMode`, `Route`, `TourRouteResult`, `TourRouteLeg`, `AddressSuggestion`, `AutocompleteResponse`, `GeocodedAddress`, `IpLocation`, `ParsedSpatialFile`, `SpatialFileFormat`, `ParsedPlacemarks`, `Placemark`, `PlacemarkGeometryType`, `PlacemarkImage`, `ParsePlacemarksOptions`, `EsriFetchOptions`, `EsriFetchResult`, `FeatureCollection`, `GeoJsonFeature`, `GeoJsonGeometry`, `MultiLineStringGeometry`, `PointGeometry`, `Position`, `GisError`, `GisErrorCode`.
 
 Compatibility guarantees for consumers that persist results:
 - `TourRouteResult` matches the shape destination-hub-api stores in `tour_routes` (`mode`, `distanceMiles`, `durationSeconds`, `waypoints`, `legs` with `steps[].instruction.text` / `from_index` / `isReturn`, `geom`).
