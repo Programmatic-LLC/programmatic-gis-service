@@ -39,6 +39,7 @@ export {
 	parseKmz,
 	parseShapefile,
 	detectAndParse,
+	parsePlacemarks,
 	extractLineGeometry,
 	countPoints
 } from './files';

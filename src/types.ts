@@ -93,6 +93,7 @@ export interface GeocodedAddress {
 	country: string;
 	latitude: number;
 	longitude: number;
+	matchType?: string | null;
 }
 
 export interface RouteLeg {
@@ -152,6 +153,38 @@ export interface ParsedSpatialFile {
 	format: SpatialFileFormat;
 	featureCollection: FeatureCollection;
 	warnings: string[];
+}
+
+export type PlacemarkGeometryType = 'point' | 'line' | 'polygon';
+
+export interface Placemark {
+	id: string | null;
+	name: string | null;
+	description: string | null;
+	folder: string[];
+	geometryType: PlacemarkGeometryType;
+	position: Position | null;
+	lines: MultiLineStringGeometry | null;
+	imageRefs: string[];
+	properties: Record<string, unknown>;
+}
+
+export interface PlacemarkImage {
+	path: string;
+	contentType: string;
+	data: Buffer;
+}
+
+export interface ParsedPlacemarks {
+	format: 'kml' | 'kmz';
+	placemarks: Placemark[];
+	images: PlacemarkImage[];
+	skipped: number;
+	warnings: string[];
+}
+
+export interface ParsePlacemarksOptions {
+	maxImageBytes?: number;
 }
 
 export interface EsriFetchOptions {

@@ -9,7 +9,12 @@ import {
 	GeoJsonFeature,
 	GeoJsonGeometry,
 	MultiLineStringGeometry,
+	ParsedPlacemarks,
 	ParsedSpatialFile,
+	ParsePlacemarksOptions,
+	Placemark,
+	PlacemarkGeometryType,
+	PlacemarkImage,
 	Position
 } from './types';
 
@@ -104,7 +109,13 @@ export const parseKml = (input: string | Buffer): ParsedSpatialFile => {
 	return { format: 'kml', featureCollection, warnings: [] };
 };
 
-export const parseKmz = async (input: Buffer | Uint8Array): Promise<ParsedSpatialFile> => {
+interface KmzArchive {
+	zip: JSZip;
+	kmlEntry: string;
+	entryNames: string[];
+}
+
+const readKmzArchive = async (input: Buffer | Uint8Array): Promise<KmzArchive> => {
 	let zip: JSZip;
 	try {
 		zip = await JSZip.loadAsync(toBuffer(input));
@@ -123,6 +134,11 @@ export const parseKmz = async (input: Buffer | Uint8Array): Promise<ParsedSpatia
 		throw new GisError('PARSE_FAILED', 'KMZ archive does not contain a .kml file', 400);
 	}
 
+	return { zip, kmlEntry, entryNames };
+};
+
+export const parseKmz = async (input: Buffer | Uint8Array): Promise<ParsedSpatialFile> => {
+	const { zip, kmlEntry } = await readKmzArchive(input);
 	const kmlText = await zip.files[kmlEntry].async('string');
 	const parsed = parseKml(kmlText);
 	return { ...parsed, format: 'kmz' };
@@ -300,6 +316,301 @@ export const extractLineGeometry = (featureCollection: FeatureCollection): Multi
 export const countPoints = (geometry: MultiLineStringGeometry): number =>
 	geometry.coordinates.reduce((sum, line) => sum + line.length, 0);
 
+const IMAGE_CONTENT_TYPES: Record<string, string> = {
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	png: 'image/png',
+	gif: 'image/gif',
+	webp: 'image/webp'
+};
+
+const DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const IMG_SRC_PATTERN = /<img\b[^>]*?\bsrc\s*=\s*["']([^"']+)["']/gi;
+const WEB_URL_PATTERN = /^https?:\/\//i;
+
+interface FolderNode {
+	type: 'folder';
+	meta: Record<string, unknown>;
+	children: TreeNode[];
+}
+
+type TreeNode = FolderNode | GeoJsonFeature;
+
+interface FoundPlacemark {
+	feature: GeoJsonFeature;
+	folder: string[];
+}
+
+const textOf = (value: unknown): string | null => {
+	if (value && typeof value === 'object' && 'value' in value) {
+		return textOf((value as { value: unknown }).value);
+	}
+	if (value === null || value === undefined) {
+		return null;
+	}
+	const text = String(value).trim();
+	return text === '' ? null : text;
+};
+
+const collectPlacemarks = (children: TreeNode[], folder: string[], found: FoundPlacemark[]): void => {
+	for (const child of children) {
+		if (child.type === 'folder') {
+			const folderNode = child as FolderNode;
+			const name = textOf(folderNode.meta?.name);
+			collectPlacemarks(folderNode.children, name ? [...folder, name] : folder, found);
+			continue;
+		}
+		const feature = child as GeoJsonFeature;
+		if (feature.properties?.['@geometry-type'] === 'groundoverlay') {
+			continue;
+		}
+		found.push({ feature, folder });
+	}
+};
+
+const toPosition = (position: unknown): Position | null => {
+	if (!Array.isArray(position)) {
+		return null;
+	}
+	const lon = Number(position[0]);
+	const lat = Number(position[1]);
+	if (!Number.isFinite(lon) || !Number.isFinite(lat) || Math.abs(lon) > 180 || Math.abs(lat) > 90) {
+		return null;
+	}
+	return [lon, lat];
+};
+
+const ringCentroid = (ring: unknown): Position | null => {
+	if (!Array.isArray(ring)) {
+		return null;
+	}
+	const positions = ring.map(toPosition).filter((position): position is Position => position !== null);
+	const last = positions[positions.length - 1];
+	if (positions.length > 1 && last[0] === positions[0][0] && last[1] === positions[0][1]) {
+		positions.pop();
+	}
+	if (positions.length === 0) {
+		return null;
+	}
+	const lon = positions.reduce((sum, position) => sum + position[0], 0) / positions.length;
+	const lat = positions.reduce((sum, position) => sum + position[1], 0) / positions.length;
+	return [lon, lat];
+};
+
+const validLines = (geometry: GeoJsonGeometry): MultiLineStringGeometry | null => {
+	const lines: Position[][] = [];
+	collectLines(geometry, lines);
+	const kept = lines
+		.map((line) => line.map(toPosition).filter((position): position is Position => position !== null))
+		.filter((line) => line.length >= 2);
+	return kept.length > 0 ? { type: 'MultiLineString', coordinates: kept } : null;
+};
+
+const firstPoint = (geometry: GeoJsonGeometry): Position | null => {
+	if (geometry.type === 'Point') {
+		return toPosition(geometry.coordinates);
+	}
+	if (geometry.type === 'MultiPoint' && Array.isArray(geometry.coordinates)) {
+		return toPosition(geometry.coordinates[0]);
+	}
+	if (geometry.type === 'GeometryCollection') {
+		for (const nested of geometry.geometries ?? []) {
+			const position = firstPoint(nested);
+			if (position) {
+				return position;
+			}
+		}
+	}
+	return null;
+};
+
+const polygonCentroid = (geometry: GeoJsonGeometry): Position | null => {
+	if (geometry.type === 'Polygon' && Array.isArray(geometry.coordinates)) {
+		return ringCentroid(geometry.coordinates[0]);
+	}
+	if (geometry.type === 'MultiPolygon' && Array.isArray(geometry.coordinates)) {
+		const [firstPolygon] = geometry.coordinates as unknown[][];
+		return Array.isArray(firstPolygon) ? ringCentroid(firstPolygon[0]) : null;
+	}
+	if (geometry.type === 'GeometryCollection') {
+		for (const nested of geometry.geometries ?? []) {
+			const position = polygonCentroid(nested);
+			if (position) {
+				return position;
+			}
+		}
+	}
+	return null;
+};
+
+const classifyGeometry = (
+	geometry: GeoJsonGeometry | null
+): { geometryType: PlacemarkGeometryType; position: Position | null; lines: MultiLineStringGeometry | null } | null => {
+	if (!geometry) {
+		return null;
+	}
+	const lines = validLines(geometry);
+	if (lines) {
+		return { geometryType: 'line', position: null, lines };
+	}
+	const point = firstPoint(geometry);
+	if (point) {
+		return { geometryType: 'point', position: point, lines: null };
+	}
+	const centroid = polygonCentroid(geometry);
+	if (centroid) {
+		return { geometryType: 'polygon', position: centroid, lines: null };
+	}
+	return null;
+};
+
+const findImageRefs = (description: string | null, properties: Record<string, unknown>): string[] => {
+	const refs: string[] = [];
+	for (const match of (description ?? '').matchAll(IMG_SRC_PATTERN)) {
+		refs.push(match[1].trim());
+	}
+	const mediaLinks = textOf(properties.gx_media_links);
+	if (mediaLinks) {
+		refs.push(...mediaLinks.split(/\s+/));
+	}
+	return [...new Set(refs.filter(Boolean))];
+};
+
+const archivePathFor = (ref: string, kmlEntry: string, entriesByLowerName: Map<string, string>): string | null => {
+	let path = ref.split(/[?#]/)[0];
+	try {
+		path = decodeURIComponent(path);
+	} catch {
+		return null;
+	}
+	path = path.replace(/^\.\//, '').replace(/^\/+/, '');
+	const kmlDirectory = kmlEntry.includes('/') ? kmlEntry.slice(0, kmlEntry.lastIndexOf('/') + 1) : '';
+	return (
+		entriesByLowerName.get(`${kmlDirectory}${path}`.toLowerCase()) ??
+		entriesByLowerName.get(path.toLowerCase()) ??
+		null
+	);
+};
+
+const uncompressedSize = (file: JSZip.JSZipObject): number | null => {
+	const size = (file as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
+	return typeof size === 'number' ? size : null;
+};
+
+const extractImage = async (
+	zip: JSZip,
+	path: string,
+	maxImageBytes: number,
+	warnings: string[]
+): Promise<PlacemarkImage | null> => {
+	const contentType = IMAGE_CONTENT_TYPES[path.toLowerCase().split('.').pop() ?? ''];
+	if (!contentType) {
+		return null;
+	}
+	const file = zip.files[path];
+	const declaredSize = uncompressedSize(file);
+	if (declaredSize !== null && declaredSize > maxImageBytes) {
+		warnings.push(`Skipped image "${path}" because it is larger than ${maxImageBytes} bytes`);
+		return null;
+	}
+	const data = await file.async('nodebuffer');
+	if (data.length > maxImageBytes) {
+		warnings.push(`Skipped image "${path}" because it is larger than ${maxImageBytes} bytes`);
+		return null;
+	}
+	return { path, contentType, data };
+};
+
+const buildPlacemarks = async (
+	format: 'kml' | 'kmz',
+	doc: Document,
+	archive: KmzArchive | null,
+	options: ParsePlacemarksOptions
+): Promise<ParsedPlacemarks> => {
+	const maxImageBytes = options.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES;
+	const warnings: string[] = [];
+	const found: FoundPlacemark[] = [];
+	collectPlacemarks(togeojson.kmlWithFolders(doc).children as TreeNode[], [], found);
+
+	const entriesByLowerName = new Map((archive?.entryNames ?? []).map((name) => [name.toLowerCase(), name]));
+	const images = new Map<string, PlacemarkImage | null>();
+	const placemarks: Placemark[] = [];
+	let skipped = 0;
+	let unresolvedImages = 0;
+
+	for (const { feature, folder } of found) {
+		const geometry = classifyGeometry(feature.geometry);
+		if (!geometry) {
+			skipped++;
+			continue;
+		}
+
+		const properties = feature.properties ?? {};
+		const description = textOf(properties.description);
+		const imageRefs: string[] = [];
+
+		for (const ref of findImageRefs(description, properties)) {
+			if (WEB_URL_PATTERN.test(ref)) {
+				imageRefs.push(ref);
+				continue;
+			}
+			const path = archive ? archivePathFor(ref, archive.kmlEntry, entriesByLowerName) : null;
+			if (!archive || !path) {
+				unresolvedImages++;
+				continue;
+			}
+			if (!images.has(path)) {
+				images.set(path, await extractImage(archive.zip, path, maxImageBytes, warnings));
+			}
+			if (images.get(path)) {
+				imageRefs.push(path);
+			}
+		}
+
+		placemarks.push({
+			id: feature.id === undefined || feature.id === null ? null : String(feature.id),
+			name: textOf(properties.name),
+			description,
+			folder,
+			...geometry,
+			imageRefs: [...new Set(imageRefs)],
+			properties
+		});
+	}
+
+	if (unresolvedImages > 0) {
+		warnings.push(`${unresolvedImages} image reference(s) pointed at files that are not in the upload`);
+	}
+
+	return {
+		format,
+		placemarks,
+		images: [...images.values()].filter((image): image is PlacemarkImage => image !== null),
+		skipped,
+		warnings
+	};
+};
+
+export const parsePlacemarks = async (
+	fileName: string,
+	input: Buffer | Uint8Array,
+	options: ParsePlacemarksOptions = {}
+): Promise<ParsedPlacemarks> => {
+	const extension = (fileName ?? '').toLowerCase().split('.').pop() ?? '';
+
+	if (extension === 'kml') {
+		return buildPlacemarks('kml', parseXmlDocument(toBuffer(input), 'KML'), null, options);
+	}
+
+	if (extension === 'kmz') {
+		const archive = await readKmzArchive(input);
+		const kmlText = await archive.zip.files[archive.kmlEntry].async('string');
+		return buildPlacemarks('kmz', parseXmlDocument(kmlText, 'KML'), archive, options);
+	}
+
+	throw new GisError('UNSUPPORTED_FORMAT', `Unsupported file type: .${extension} (expected .kml or .kmz)`, 400);
+};
+
 export const files = {
 	parseGeoJson,
 	parseGpx,
@@ -307,6 +618,7 @@ export const files = {
 	parseKmz,
 	parseShapefile,
 	detectAndParse,
+	parsePlacemarks,
 	extractLineGeometry,
 	countPoints
 };
